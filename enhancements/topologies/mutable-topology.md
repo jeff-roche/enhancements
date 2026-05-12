@@ -28,9 +28,9 @@ superseded-by: []
 
 **Mutable Topology** — The capability for an OpenShift cluster to transition between topology modes as a Day 2 operation, removing the existing assumption that topologies are immutable after installation.
 
-**Topology Transition** — A directed, orchestrated change from one topology mode to another (e.g., SingleReplica to HighlyAvailable). Transitions are managed by a dedicated operator and follow a defined directed acyclic graph (DAG) of supported paths.
+**Topology Transition** — A directed, orchestrated change from one topology mode to another (e.g., SingleReplica to HighlyAvailable). Transitions are managed by a dedicated operator and follow a directed graph of supported paths.
 
-**OpenShift Topology Transition Operator (OTTO)** — An optional payload operator responsible for orchestrating topology transitions. OTTO owns the transition DAG, validates preconditions, coordinates with cluster operators, and updates the Infrastructure config once the cluster is ready.
+**OpenShift Topology Transition Operator (OTTO)** — An optional payload operator responsible for orchestrating topology transitions. OTTO owns the transition graph, validates preconditions, coordinates with cluster operators, and updates the Infrastructure config once the cluster is ready.
 
 **Control Plane Topology** — The cluster-topology mode describing how control-plane nodes are deployed and managed (SingleReplica, HighlyAvailable, or other supported modes). Control-plane nodes are nodes labeled with `node-role.kubernetes.io/control-plane` or `node-role.kubernetes.io/master`.
 
@@ -45,7 +45,7 @@ superseded-by: []
 This enhancement introduces "mutable topology" which is defined as "the ability for OpenShift clusters to transition between topology modes as a Day 2 operation". This changes the existing OpenShift assumption that topologies are immutable after installation.
 
 A new optional payload operator, the OpenShift Topology Transition Operator (OTTO), will orchestrate transitions.
-OTTO maintains a directed acyclic graph (DAG) of supported transitions along with their preconditions, configuration steps, and validation criteria.
+OTTO maintains a directed graph of supported transitions along with their preconditions, configuration steps, and validation criteria.
 A new `oc adm transition topology` CLI command provides an interactive interface for cluster administrators to configure and execute transitions.
 The initial implementation supports transitioning Single Node OpenShift (SNO) clusters to HA compact (3-node) on `platform: none`.
 
@@ -78,7 +78,7 @@ This keeps operator logic simple and concentrates transition complexity in a sin
 ### Goals
 
 * Officially support topology transitions in OpenShift
-* Provide a topology transition operator (OTTO) that owns the transition DAG and orchestrates transitions safely
+* Provide a topology transition operator (OTTO) that owns the transition graph and orchestrates transitions safely
 * Provide an `oc adm transition topology` CLI command for interactive transition management
 * Support transitioning SNO clusters to HA compact (3-node) on `platform: none` as the initial transition path
 * Maintain backward compatibility — existing clusters with fixed topology modes are unaffected
@@ -102,7 +102,7 @@ A dedicated operator is the right vehicle for this because topology transitions 
 
 The approach has two components:
 
-1. **OpenShift Topology Transition Operator (OTTO)** — An operator that ships with the payload but is not installed by default. OTTO owns the transition DAG, validates preconditions, orchestrates the transition sequence, and updates the Infrastructure config as the final step.
+1. **OpenShift Topology Transition Operator (OTTO)** — An operator that ships with the payload but is not installed by default. OTTO owns the transition graph, validates preconditions, orchestrates the transition sequence, and updates the Infrastructure config as the final step.
 
 2. **`oc adm transition topology` CLI command** — An interactive command that installs/activates OTTO if needed, guides the administrator through configuring the transition (nodes, certificates, secrets, etc.), and monitors transition status via OTTO's custom resources.
 
@@ -242,21 +242,21 @@ OTTO is a new optional payload operator with the following characteristics:
 
 - **Ships with the payload** but is **not installed by default**
 - Installed either manually or via the `oc adm transition topology` command
-- Owns the transition DAG — the directed acyclic graph defining which topology transitions are supported
+- Owns the transition graph — the directed graph defining which topology transitions are supported
 - Owns the validation criteria for each transition (required nodes, certificates, secrets, operator states)
 - Orchestrates transitions by interacting with cluster operators via their existing APIs
 - Updates the Infrastructure status field as the final step, after the cluster is ready for the new topology
 - Reports transition status via custom resources
 
-##### Transition DAG
+##### Transition Graph
 
-OTTO maintains a DAG of supported transitions. For the initial implementation:
+OTTO maintains a directed graph of supported transitions. For the initial implementation:
 
 ```text
 SingleReplica (SNO, platform: none) → HighlyAvailable (3-node compact)
 ```
 
-Future transitions can be added to the DAG without modifying the core operator logic. Each edge in the DAG includes:
+Future transitions can be added to the graph without modifying the core operator logic. Each edge in the graph includes:
 
 - **Preconditions**: What must be true before the transition can start
 - **Configuration steps**: What OTTO must do during the transition
@@ -310,7 +310,7 @@ The 2-member state is transient and follows the same pattern as cluster bootstra
 
 | Component | Changes Required |
 | --------- | ---------------- |
-| OTTO (new) | Transition operator with DAG, validation, orchestration, and transition CRD |
+| OTTO (new) | Transition operator with transition graph, validation, orchestration, and transition control CRD(s) |
 | `oc` CLI | New `oc adm transition topology` interactive command |
 | Infrastructure API | ValidatingAdmissionPolicy to restrict direct topology field edits |
 | cluster-etcd-operator | Coordinate with OTTO for sequential etcd scaling during transitions |
@@ -396,7 +396,7 @@ Mutable topology achieves the same end goal (SNO clusters can grow to HA) with l
 An alternative is to embed all transition logic in the `oc adm transition` command without a dedicated operator.
 
 **Why it was rejected**:
-- The set of supported topologies is bounded, so the transition DAG itself stays small. However, each transition is a long-running, multi-step process (etcd scaling alone takes minutes) that requires persistent state tracking a CLI process cannot reliably provide — a dropped SSH session or terminal close would leave the cluster in an intermediate state with no automated recovery
+- The set of supported topologies is bounded, so the transition graph itself stays small. However, each transition is a long-running, multi-step process (etcd scaling alone takes minutes) that requires persistent state tracking a CLI process cannot reliably provide — a dropped SSH session or terminal close would leave the cluster in an intermediate state with no automated recovery
 - Error recovery and retry logic is better suited to an operator's reconciliation loop than imperative CLI code
 - The CLI would need direct access to operator internals, violating separation of concerns
 
@@ -433,7 +433,7 @@ MCO handles node-level changes and rolling operations, making it a candidate for
 
 ## Open Questions [optional]
 
-1. **Transition DAG scope**: Beyond SNO → HA compact on `platform: none`, what transitions should be supported and on what platforms? The initial plan limits scope to this single path. Future transitions can be added to the DAG without modifying core architecture.
+1. **Transition Graph scope**: Beyond SNO → HA compact on `platform: none`, what transitions should be supported and on what platforms? The initial plan limits scope to this single path. Future transitions can be added to the graph without modifying core architecture.
 
 2. **HyperShift considerations**: Since the scope has broadened from edge-specific to changing the topology assumption for OpenShift as a whole, do we need to consider HyperShift support? Initial answer is no — this would be future work and require its own enhancement.
 
@@ -488,7 +488,7 @@ Standard QE testing scenarios will include:
 
 ### Entering Dev Preview
 
-- OTTO operator implemented with transition CRD and SNO → HA compact DAG edge
+- OTTO operator implemented with transition CRD and SNO → HA compact graph edge
 - `oc adm transition topology` CLI command implemented
 - `MutableTopology` feature gate added to `DevPreviewNoUpgrade` feature set
 - ValidatingAdmissionPolicy enforces controlled topology field updates
@@ -560,7 +560,7 @@ The ValidatingAdmissionPolicy that restricts direct topology field edits is eval
 **OpenShift Edge Team:**
 - OTTO operator implementation and maintenance
 - CLI (`oc adm transition topology` command)
-- Transition DAG definition and validation logic
+- Transition graph definition and validation logic
 - Infrastructure config ValidatingAdmissionPolicy
 
 **Control Plane Team:**
