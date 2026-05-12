@@ -26,7 +26,7 @@ superseded-by: []
 
 ## Terms
 
-**Mutable Topology** — The capability for an OpenShift cluster to transition between topology modes as a Day 2 operation, breaking the existing assumption that topologies are immutable after installation.
+**Mutable Topology** — The capability for an OpenShift cluster to transition between topology modes as a Day 2 operation, removing the existing assumption that topologies are immutable after installation.
 
 **Topology Transition** — A directed, orchestrated change from one topology mode to another (e.g., SingleReplica to HighlyAvailable). Transitions are managed by a dedicated operator and follow a defined directed acyclic graph (DAG) of supported paths.
 
@@ -38,11 +38,11 @@ superseded-by: []
 
 **Compact Cluster** — A cluster where control-plane nodes also serve as workers. In the initial SNO-to-HA transition, the target is a 3-node compact cluster with no dedicated worker nodes.
 
-**Cluster Administrator** — A human user responsible for managing an existing cluster, including Day 2 operations such as topology transitions and node scaling.
+**Cluster Administrator** — An entity responsible for managing an existing cluster, including Day 2 operations such as topology transitions and node scaling.
 
 ## Summary
 
-This enhancement introduces mutable topology — the ability for OpenShift clusters to transition between topology modes as a Day 2 operation. This changes the existing OpenShift assumption that topologies are immutable after installation.
+This enhancement introduces "mutable topology" which is defined as "the ability for OpenShift clusters to transition between topology modes as a Day 2 operation". This changes the existing OpenShift assumption that topologies are immutable after installation.
 
 A new optional payload operator, the OpenShift Topology Transition Operator (OTTO), will orchestrate transitions.
 OTTO maintains a directed acyclic graph (DAG) of supported transitions along with their preconditions, configuration steps, and validation criteria.
@@ -69,7 +69,7 @@ This keeps operator logic simple and concentrates transition complexity in a sin
 
 * As a cluster administrator running Single Node OpenShift (SNO) at an edge location, I want to add control-plane nodes to my cluster to achieve high availability so that I can handle node failures without service disruption as workloads become more critical.
 
-* As a solutions architect deploying OpenShift clusters at scale, I want to start with minimal footprint deployments that can grow into highly available clusters so that I can reduce initial costs while maintaining scalability.
+* As a cluster administrator deploying OpenShift clusters at scale, I want to start with minimal footprint deployments that can grow into highly available clusters so that I can reduce initial costs while maintaining scalability.
 
 * As a cluster administrator managing a fleet of edge deployments, I want a supported path to transition my cluster topology so that I don't need to redeploy clusters when my infrastructure requirements change.
 
@@ -77,7 +77,7 @@ This keeps operator logic simple and concentrates transition complexity in a sin
 
 ### Goals
 
-* Change the OpenShift support guideline of "topologies are immutable" by providing a supported mechanism for topology transitions
+* Officially support topology transitions in OpenShift
 * Provide a topology transition operator (OTTO) that owns the transition DAG and orchestrates transitions safely
 * Provide an `oc adm transition topology` CLI command for interactive transition management
 * Support transitioning SNO clusters to HA compact (3-node) on `platform: none` as the initial transition path
@@ -98,6 +98,8 @@ This keeps operator logic simple and concentrates transition complexity in a sin
 
 Mutable topology introduces a new optional payload operator and CLI command to enable topology transitions as Day 2 operations.
 
+A dedicated operator is the right vehicle for this because topology transitions are long-running, multi-step orchestration workflows that require persistent state, failure recovery, and coordination across multiple cluster operators. This logic does not belong in CVO — CVO is a critical-path operator where additional surface area increases risk to every cluster, and topology transitions are operationally distinct from version management. It does not belong in the CLI because CLI processes cannot survive disconnects or provide the reconciliation loop needed for automatic recovery from partial failures. A separate operator isolates this complexity, ships with the payload but installs only when needed, and can be tested independently.
+
 The approach has two components:
 
 1. **OpenShift Topology Transition Operator (OTTO)** — An operator that ships with the payload but is not installed by default. OTTO owns the transition DAG, validates preconditions, orchestrates the transition sequence, and updates the Infrastructure config as the final step.
@@ -108,7 +110,7 @@ The approach has two components:
 
 #### Transition: SNO to HA Compact (3-Node)
 
-**cluster administrator** is a human user responsible for managing an existing cluster.
+**cluster administrator** is an entity responsible for managing an existing cluster.
 
 **Non-functional constraint**: There is no availability guarantee during topology transitions. Scaling control-plane nodes is an explicit operational action, and administrators should treat it as a maintenance window. The cluster is expected to be fully available before and after the transition, but not necessarily during.
 
@@ -394,19 +396,40 @@ Mutable topology achieves the same end goal (SNO clusters can grow to HA) with l
 An alternative is to embed all transition logic in the `oc adm transition` command without a dedicated operator.
 
 **Why it was rejected**:
-- As more transitions become supported, the CLI would grow unmanageably large
-- Long-running transitions require persistent state tracking that a CLI process cannot reliably provide
+- The set of supported topologies is bounded, so the transition DAG itself stays small. However, each transition is a long-running, multi-step process (etcd scaling alone takes minutes) that requires persistent state tracking a CLI process cannot reliably provide — a dropped SSH session or terminal close would leave the cluster in an intermediate state with no automated recovery
+- Error recovery and retry logic is better suited to an operator's reconciliation loop than imperative CLI code
 - The CLI would need direct access to operator internals, violating separation of concerns
-- Error recovery and retry logic is better suited to an operator's reconciliation loop
 
-### Controller in CVO
+### Extending an Existing Core Operator
+
+Rather than introducing a new operator, transition logic could be added to an existing core operator. The most plausible candidates:
+
+#### Controller in CVO
 
 An alternative is to add transition controllers to the cluster-version-operator (CVO).
 
 **Why it was rejected**:
-- Overloads CVO with responsibilities unrelated to version management
-- As the transition DAG grows, it would significantly increase CVO complexity
-- CVO is already a complex operator; adding topology transition logic increases risk
+- CVO is a critical-path operator — every cluster depends on it for updates. Adding topology transition logic increases the surface area for bugs in a component where failures have outsized blast radius
+- CVO is always active and manages every cluster. OTTO is optional and only installed when topology transitions are needed. Embedding optional, long-running orchestration workflows in a required operator couples their failure modes unnecessarily
+- Topology transitions and version management are operationally distinct workflows with different preconditions, sequencing, and failure handling. While both touch infrastructure state, a topology transition is not a version change — it coordinates operators laterally rather than rolling out a new payload
+
+#### Controller in cluster-etcd-operator (CEO)
+
+CEO already handles the most critical part of a topology transition — etcd member scaling. An alternative is to extend CEO to orchestrate the full transition workflow.
+
+**Why it was rejected**:
+- CEO's scope is etcd lifecycle management. Topology transitions require coordinating ingress, networking, and other operators beyond etcd — expanding CEO's responsibility well beyond its current domain
+- CEO is a critical-path operator. Bugs in transition orchestration logic could affect etcd operations on clusters that never use topology transitions
+- The same blast-radius argument that applies to CVO applies here — critical operators should not absorb optional orchestration workflows
+
+#### Controller in machine-config-operator (MCO)
+
+MCO handles node-level changes and rolling operations, making it a candidate for orchestrating node-topology changes.
+
+**Why it was rejected**:
+- MCO's domain is machine configuration (OS, kubelet config, node-level state), not cluster topology orchestration
+- Topology transitions require cross-operator coordination (etcd, ingress, networking, Infrastructure config) that is outside MCO's current scope
+- Like CVO and CEO, MCO is a critical-path operator where additional surface area increases risk to every cluster
 
 ## Open Questions [optional]
 
